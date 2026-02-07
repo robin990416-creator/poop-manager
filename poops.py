@@ -380,48 +380,75 @@ with tab1:
                 time.sleep(1)
                 st.rerun()
 
-# --- 탭 2: 배변 기록 (빈 화면 해결됨 ✅) ---
+# --- 탭 2: 배변 기록 (세분화 기능 추가됨 ✅) ---
 with tab2:
     st.write("🧻 **배변 기록**")
     
-    st.write("### 🚀 지금 바로 쾌변하셨나요?")
-    if st.button("네! 지금 다 비웠습니다 🚽", type="primary"):
-        dump_amount = float(user_data['current_poop_stock'])
-        now = datetime.datetime.now()
-        entry = {"date": now.strftime("%Y-%m-%d %H:%M"), "amount": round(dump_amount, 1)}
-        
-        if next_pred_dt:
-            err = int((now - next_pred_dt).total_seconds() / 60)
-            entry["predicted"] = next_pred_dt.strftime("%Y-%m-%d %H:%M")
-            entry["error_min"] = err
-            
-        user_data['poop_log'].append(entry)
-        user_data['current_poop_stock'] = 0.0
-        user_data['last_poop'] = now.strftime("%Y-%m-%d %H:%M")
-        save_data(data)
-        st.balloons()
-        st.success(f"상쾌하시겠어요! (예상 배출량: {dump_amount:.1f}g)")
-        time.sleep(1)
-        st.rerun()
-
-    st.divider()
-
-    st.write("### 🕒 아까 다녀오셨나요?")
+    # 1. 날짜 및 시간 선택 (공통)
     c1, c2 = st.columns(2)
-    poop_date = c1.date_input("날짜", datetime.datetime.now(), key="pd")
-    poop_time = c2.time_input("시간", datetime.datetime.now(), key="pt")
+    poop_date = c1.date_input("📅 날짜", datetime.datetime.now(), key="pd")
+    poop_time = c2.time_input("⏰ 시간", datetime.datetime.now(), key="pt")
+
+    st.write("### 🚽 배변 컨디션은 어땠나요?")
     
-    if st.button("이 시간에 다녀왔다고 기록하기 💾"):
-        dump_amount = float(user_data['current_poop_stock'])
-        poop_dt = datetime.datetime.combine(poop_date, poop_time)
+    # 배출량(만족도) 선택 3단계
+    poop_condition = st.radio(
+        "배출 정도를 선택해주세요:",
+        ["🌟 쾌변 (100% 싹 비움)", "🙂 보통 (50% 정도 비움)", "😞 찜찜 (20% 조금만 나옴)"],
+        horizontal=True
+    )
+    
+    st.divider()
+    
+    if st.button("기록 저장하기 💾", type="primary"):
+        # 현재 뱃속 재고
+        current_stock = float(user_data['current_poop_stock'])
         
+        # 선택에 따른 배출 비율 결정
+        if "쾌변" in poop_condition:
+            dump_ratio = 1.0
+        elif "보통" in poop_condition:
+            dump_ratio = 0.5
+        else: # 찜찜
+            dump_ratio = 0.2
+            
+        dump_amount = current_stock * dump_ratio
+        remaining_amount = current_stock - dump_amount
+        
+        poop_dt = datetime.datetime.combine(poop_date, poop_time)
         entry = {"date": poop_dt.strftime("%Y-%m-%d %H:%M"), "amount": round(dump_amount, 1)}
         
+        # 예측 오차 계산
         if next_pred_dt:
             err = int((poop_dt - next_pred_dt).total_seconds() / 60)
             entry["predicted"] = next_pred_dt.strftime("%Y-%m-%d %H:%M")
             entry["error_min"] = err
         
+        # 데이터 저장
         user_data['poop_log'].append(entry)
-        user_data['current_poop_stock'] = 0.0
+        user_data['current_poop_stock'] = round(remaining_amount, 1) # 남은 양 업데이트
         user_data['last_poop'] = poop_dt.strftime("%Y-%m-%d %H:%M")
+        save_data(data)
+        
+        if dump_ratio == 1.0:
+            st.balloons()
+            st.success(f"완벽한 쾌변! {dump_amount:.1f}g 배출 완료! (잔여: 0g)")
+        else:
+            st.success(f"기록 완료! {dump_amount:.1f}g 배출. (뱃속 잔여: {remaining_amount:.1f}g)")
+            
+        time.sleep(2)
+        st.rerun()
+
+    st.divider()
+    
+    if user_data['poop_log']:
+        st.write("🚽 **최근 배변 기록**")
+        pdf = pd.DataFrame(user_data['poop_log'])[::-1]
+        
+        rename_map = {"date": "시간", "amount": "예상배출량(g)", "error_min": "예측오차(분)", "predicted": "예측시간"}
+        pdf = pdf.rename(columns=rename_map)
+        
+        cols = [c for c in ["시간", "예상배출량(g)", "예측시간", "예측오차(분)"] if c in pdf.columns]
+        st.dataframe(pdf[cols], hide_index=True, use_container_width=True)
+    else:
+        st.info("아직 배변 기록이 없습니다.")
