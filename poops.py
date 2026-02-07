@@ -8,6 +8,7 @@ import pandas as pd
 import os
 import hashlib
 import statistics
+import re
 
 # ---------------------------------------------------------
 # [설정] API 키 & 데이터 파일
@@ -72,13 +73,56 @@ def save_data(data):
 def load_food_db():
     if os.path.exists(FOOD_DB_FILE):
         try:
-            df = pd.read_csv(FOOD_DB_FILE)
-            if "menu" not in df.columns:
-                st.warning("CSV에 'menu' 컬럼이 없습니다.")
+            try:
+                df = pd.read_csv(FOOD_DB_FILE, encoding="utf-8-sig")
+            except Exception:
+                df = pd.read_csv(FOOD_DB_FILE)
+
+            df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
+
+            def col_key(col):
+                return re.sub(r"[^0-9a-z가-힣]", "", str(col).strip().lower())
+
+            norm_cols = {col: col_key(col) for col in df.columns}
+
+            def find_col(candidates):
+                cand_keys = [col_key(c) for c in candidates]
+                for col, key in norm_cols.items():
+                    if key in cand_keys:
+                        return col
+                for col, key in norm_cols.items():
+                    for ck in cand_keys:
+                        if ck and key.startswith(ck):
+                            return col
+                return None
+
+            menu_col = find_col(["menu", "메뉴", "음식", "식품명", "음식명", "메뉴명", "대표식품명", "name", "food"])
+            if not menu_col:
+                st.warning("CSV에서 메뉴 컬럼을 찾을 수 없습니다. (예: '메뉴' 또는 '식품명')")
                 return {}
-            # 메뉴명 정리
+
+            df = df.rename(columns={menu_col: "menu"})
             df["menu"] = df["menu"].astype(str).str.strip()
             df = df[df["menu"] != ""]
+
+            nutrient_cols = {
+                "protein": ["protein", "단백질", "단백질g", "단백질(g)"],
+                "fat": ["fat", "지방", "지방g", "지방(g)"],
+                "carbs": ["carbs", "탄수화물", "탄수화물g", "탄수화물(g)", "carb", "carbohydrate"],
+                "fiber": ["fiber", "식이섬유", "식이섬유g", "식이섬유(g)", "dietaryfiber"]
+            }
+
+            for std, candidates in nutrient_cols.items():
+                col = find_col(candidates)
+                if col:
+                    df = df.rename(columns={col: std})
+                else:
+                    df[std] = 0.0
+                    st.warning(f"CSV에 '{std}' 관련 컬럼이 없어 0으로 처리합니다.")
+
+            for n in ["protein", "fat", "carbs", "fiber"]:
+                df[n] = pd.to_numeric(df[n], errors="coerce").fillna(0)
+
             # 중복 메뉴명 처리
             dup_mask = df["menu"].duplicated(keep=False)
             if dup_mask.any():
@@ -87,8 +131,10 @@ def load_food_db():
                 more = "" if len(dup_names) <= 10 else f" 외 {len(dup_names) - 10}개"
                 st.warning(f"CSV에 중복 메뉴명이 있어 첫 항목만 사용합니다: {preview}{more}")
                 df = df.groupby("menu", as_index=False).first()
-            # 메뉴명을 키로 변환
-            return df.set_index('menu').to_dict(orient='index')
+
+            # 필요한 컬럼만 사용
+            df = df[["menu", "protein", "fat", "carbs", "fiber"]]
+            return df.set_index("menu").to_dict(orient="index")
         except Exception as e:
             st.warning(f"CSV 파일을 읽을 수 없습니다: {e}")
             return {}
@@ -191,7 +237,7 @@ def estimate_transit_hours(meals, poops, window_days=3, max_hours=72):
 st.set_page_config(page_title="장 건강 매니저", page_icon="💩")
 
 if 'user_name' not in st.session_state:
-    st.title("💩 나만의 시크릿 배변 일기장")
+    st.title("💩 나만의 비밀 일기장")
     name_input = st.text_input("이름을 입력해주세요")
     if st.button("시작하기"):
         if name_input:
