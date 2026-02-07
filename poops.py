@@ -23,21 +23,30 @@ else:
 
 model = genai.GenerativeModel('gemini-flash-latest')
 
-# 2. 구글 시트 연결 함수 (TOML 테이블 호환 버전 🛠️)
+# 2. 구글 시트 연결 함수 (키 자동 수리 기능 추가 🛠️)
 @st.cache_resource
 def get_google_sheet_client():
     try:
-        # 1순위: [gcp_service_account] 테이블 방식으로 시도 (가장 안정적)
         if "gcp_service_account" in st.secrets:
             key_dict = dict(st.secrets["gcp_service_account"])
-            # private_key의 줄바꿈 문자(\n)가 문자로 인식될 경우 실제 줄바꿈으로 변환
-            if "\\n" in key_dict["private_key"]:
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-        
-        # 2순위: 옛날 방식 (JSON 문자열) 시도
+            
+            # 🛠️ [핵심] private_key 자동 수리
+            pk = key_dict.get("private_key", "")
+            
+            # 1. "..." 같은 예시 문구가 들어있으면 에러 띄우기
+            if "..." in pk or len(pk) < 100:
+                st.error("🚨 'private_key'가 너무 짧거나 '...'이 포함되어 있습니다! JSON 파일의 진짜 긴 암호를 복사해서 넣어주세요.")
+                return None
+
+            # 2. 줄바꿈 문자(\n) 처리 (문자열로 들어왔을 때)
+            if "\\n" in pk:
+                pk = pk.replace("\\n", "\n")
+            
+            # 3. 앞뒤 공백 제거 및 업데이트
+            key_dict["private_key"] = pk.strip()
+
         elif "GOOGLE_SHEET_KEY" in st.secrets:
             key_dict = json.loads(st.secrets["GOOGLE_SHEET_KEY"])
-        
         else:
             st.error("🚨 Secrets에 구글 시트 키가 없습니다. [gcp_service_account] 설정을 확인해주세요.")
             return None
@@ -50,12 +59,12 @@ def get_google_sheet_client():
         st.error(f"🔌 구글 시트 연결 실패: {e}\n(Secrets의 private_key 형식을 확인해주세요!)")
         return None
 
-# 3. 데이터 로드/저장 함수 (구글 시트 버전)
+# 3. 데이터 로드/저장 함수
 def get_or_create_worksheet(client, sheet_name, user_name):
     try:
         sh = client.open("poop_db")
     except gspread.SpreadsheetNotFound:
-        st.error("🚨 'poop_db'라는 이름의 구글 스프레드시트를 찾을 수 없습니다! 구글 드라이브에서 파일을 만들고 봇 계정을 초대했는지 확인해주세요.")
+        st.error("🚨 'poop_db'라는 이름의 구글 스프레드시트를 찾을 수 없습니다! 구글 드라이브에서 파일을 만들고 봇 계정을 편집자로 초대했는지 확인해주세요.")
         st.stop()
 
     try:
@@ -86,15 +95,18 @@ def load_data_from_sheet(user_name):
     # 3. 뱃속 재고 계산
     current_stock = 0.0
     events = []
+    
+    def safe_float(val):
+        try: return float(val)
+        except: return 0.0
+
     for m in my_meals:
-        # 날짜 형식이 올바른지 확인
         if m.get("날짜"):
-            events.append({"type": "eat", "date": str(m["날짜"]), "amount": float(m["배변변환량(g)"])})
+            events.append({"type": "eat", "date": str(m["날짜"]), "amount": safe_float(m.get("배변변환량(g)", 0))})
     for p in my_poops:
         if p.get("날짜"):
-            events.append({"type": "poop", "date": str(p["날짜"]), "amount": float(p["배출량(g)"])})
+            events.append({"type": "poop", "date": str(p["날짜"]), "amount": safe_float(p.get("배출량(g)", 0))})
     
-    # 날짜 정렬
     def safe_parse(d):
         try: return datetime.datetime.strptime(d, "%Y-%m-%d %H:%M")
         except: return datetime.datetime.min
@@ -201,7 +213,6 @@ def estimate_transit_hours(meals, poops):
     if not meals_f or not poops_f: return None
 
     deltas = []
-    # 최근 5건의 식사만 분석
     recent_meals = meals_f[-5:]
     for m in recent_meals:
         for p in poops_f:
@@ -217,7 +228,6 @@ def estimate_transit_hours(meals, poops):
 def load_food_db():
     try:
         if os.path.exists("food_db.csv"):
-            # 인코딩 자동 감지 시도
             try:
                 df = pd.read_csv("food_db.csv", encoding='utf-8')
             except:
@@ -252,13 +262,11 @@ if 'user_name' not in st.session_state:
 user_name = st.session_state['user_name']
 food_db = load_food_db()
 
-# 데이터 로드
 with st.spinner("☁️ 구글 시트에서 데이터를 불러오는 중..."):
     my_meals, my_poops, current_poop_stock = load_data_from_sheet(user_name)
 
 st.title(f"🤫 {user_name}의 비밀일기장")
 
-# 통계 계산
 transit_hours = estimate_transit_hours(my_meals, my_poops)
 last_meal_dt = parse_dt(my_meals[-1]["날짜"]) if my_meals else None
 next_pred_dt = None
