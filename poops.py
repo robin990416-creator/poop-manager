@@ -27,6 +27,7 @@ model = genai.GenerativeModel('gemini-flash-latest')
 @st.cache_resource
 def get_google_sheet_client():
     try:
+        # 1순위: [gcp_service_account] 테이블 방식
         if "gcp_service_account" in st.secrets:
             key_dict = dict(st.secrets["gcp_service_account"])
             pk = key_dict.get("private_key", "")
@@ -34,32 +35,51 @@ def get_google_sheet_client():
                 key_dict["private_key"] = pk.replace("\\n", "\n")
             key_dict["private_key"] = key_dict["private_key"].strip()
 
+        # 2순위: 옛날 방식 (JSON 문자열)
         elif "GOOGLE_SHEET_KEY" in st.secrets:
             key_dict = json.loads(st.secrets["GOOGLE_SHEET_KEY"])
         else:
             st.error("🚨 Secrets 설정 오류.")
-            return None
+            return None, None
 
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
         client = gspread.authorize(creds)
-        return client
+        
+        # 🤖 로봇의 이메일 주소를 반환 (디버깅용)
+        bot_email = creds.service_account_email
+        return client, bot_email
+        
     except Exception as e:
         st.error(f"🔌 연결 실패: {e}")
-        return None
+        return None, None
 
-# 3. 데이터 로드/저장 함수 (디버깅 기능 강화 🕵️‍♂️)
-def get_or_create_worksheet(client, sheet_name, user_name):
+# 3. 데이터 로드/저장 함수 (초대장 확인 기능 강화 💌)
+def get_or_create_worksheet(client, sheet_name, user_name, bot_email):
     try:
         sh = client.open("poop_db")
     except gspread.SpreadsheetNotFound:
-        # 🚨 못 찾았을 때, 로봇이 볼 수 있는 파일 목록을 출력해줌!
+        # 🚨 못 찾았을 때, 범인을 잡기 위해 로봇 이메일을 대문짝만하게 보여줍니다!
+        st.error(f"""
+        🚨 'poop_db' 파일을 찾을 수 없습니다!
+        
+        범인은 **'초대(공유)'**일 확률이 높습니다.
+        아래 이메일 주소를 복사해서, 구글 시트의 **[공유]** 버튼을 누르고 다시 추가해주세요.
+        
+        🤖 **이 로봇을 초대해주세요:**
+        👉 `{bot_email}`
+        
+        (위 주소를 드래그해서 복사하세요!)
+        """)
+        
+        # 로봇이 현재 볼 수 있는 파일 목록도 보여줌
         try:
             file_list = client.openall()
             titles = [f.title for f in file_list]
-            st.error(f"🚨 'poop_db' 파일을 찾을 수 없습니다.\n\n🤖 **로봇이 현재 볼 수 있는 파일 목록:**\n{titles}\n\n1. 목록에 아무것도 없다면? 👉 **공유(초대)**가 안 됐거나 **Google Drive API**가 꺼져있습니다.\n2. 목록에 있는데 이름이 다르다면? 👉 파일 이름을 **'poop_db'**로 바꿔주세요.\n3. 엑셀 파일(.xlsx)은 아닌가요? 👉 **구글 스프레드시트**로 새로 만들어주세요.")
-        except Exception as e:
-            st.error(f"🚨 'poop_db'를 못 찾았고, 파일 목록 조회도 실패했습니다.\n(원인: {e})\n\n👉 **구글 클라우드 콘솔에서 'Google Drive API'를 켰는지 꼭 확인해주세요!**")
+            st.warning(f"참고: 현재 로봇이 볼 수 있는 파일 목록: {titles}")
+        except:
+            pass
+            
         st.stop()
 
     try:
@@ -74,14 +94,15 @@ def get_or_create_worksheet(client, sheet_name, user_name):
     return worksheet
 
 def load_data_from_sheet(user_name):
-    client = get_google_sheet_client()
+    client, bot_email = get_google_sheet_client()
     if not client: return [], [], 0.0
 
-    ws_meals = get_or_create_worksheet(client, "meals", user_name)
+    # 시트 가져오기 (이메일 정보 넘김)
+    ws_meals = get_or_create_worksheet(client, "meals", user_name, bot_email)
     meals_data = ws_meals.get_all_records()
     my_meals = [m for m in meals_data if str(m.get("이름")) == user_name]
 
-    ws_poops = get_or_create_worksheet(client, "poops", user_name)
+    ws_poops = get_or_create_worksheet(client, "poops", user_name, bot_email)
     poops_data = ws_poops.get_all_records()
     my_poops = [p for p in poops_data if str(p.get("이름")) == user_name]
 
@@ -115,15 +136,15 @@ def load_data_from_sheet(user_name):
     return my_meals, my_poops, round(current_stock, 1)
 
 def save_meal_to_sheet(user_name, date, menu, people, weight, poop_amount):
-    client = get_google_sheet_client()
+    client, bot_email = get_google_sheet_client()
     if client:
-        ws = get_or_create_worksheet(client, "meals", user_name)
+        ws = get_or_create_worksheet(client, "meals", user_name, bot_email)
         ws.append_row([user_name, date, menu, people, weight, poop_amount])
 
 def save_poop_to_sheet(user_name, date, amount, condition, error_min, pred_time):
-    client = get_google_sheet_client()
+    client, bot_email = get_google_sheet_client()
     if client:
-        ws = get_or_create_worksheet(client, "poops", user_name)
+        ws = get_or_create_worksheet(client, "poops", user_name, bot_email)
         ws.append_row([user_name, date, amount, condition, error_min, pred_time])
 
 # ---------------------------------------------------------
