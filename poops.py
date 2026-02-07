@@ -96,7 +96,7 @@ def analyze_food_image(image):
 st.set_page_config(page_title="장 건강 매니저", page_icon="💩")
 
 if 'user_name' not in st.session_state:
-    st.title("💩 영훈이의 시크릿 배변 일기장")
+    st.title("💩 나만의 시크릿 배변 일기장")
     name_input = st.text_input("이름을 입력해주세요")
     if st.button("시작하기"):
         if name_input:
