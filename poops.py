@@ -10,14 +10,13 @@ import os
 # ---------------------------------------------------------
 # [설정] API 키 & 데이터 파일
 # ---------------------------------------------------------
-# 1. API 키 보안 확인
 if "GOOGLE_API_KEY" in st.secrets:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 else:
     st.error("🚨 API 키가 없습니다. Secrets 설정을 확인해주세요.")
     st.stop()
 
-# 2. 파일 설정 (CSV 사용!)
+# 파일 설정
 DATA_FILE = "user_health_data.json"
 FOOD_DB_FILE = "food_db.csv"
 
@@ -25,7 +24,7 @@ genai.configure(api_key=GOOGLE_API_KEY, transport='rest')
 model = genai.GenerativeModel('gemini-flash-latest')
 
 # ---------------------------------------------------------
-# 🕵️‍♂️ [비밀 공식] 배변량 계산 (비율을 Secrets에서 가져옴)
+# 🕵️‍♂️ [비밀 공식] 배변량 계산
 # ---------------------------------------------------------
 def calculate_poop_amount(protein, fat, carbs, fiber):
     try:
@@ -60,11 +59,11 @@ def save_data(data):
 def load_food_db():
     if os.path.exists(FOOD_DB_FILE):
         try:
-            # CSV 읽기 (인코딩 에러 나면 engine='python' 추가)
             df = pd.read_csv(FOOD_DB_FILE)
+            # 메뉴명을 키로 변환
             return df.set_index('menu').to_dict(orient='index')
         except Exception as e:
-            st.error(f"CSV 파일 읽기 실패: {e}")
+            st.warning(f"CSV 파일을 읽을 수 없습니다: {e}")
             return {}
     return {}
 
@@ -76,7 +75,7 @@ def analyze_food_image(image):
     prompt = """
     이 음식 사진을 분석해서 JSON 형식으로만 답해줘.
     1. 음식 이름 (food_name): 메뉴명 (예: 김치찌개)
-    2. 총 중량 (total_weight_g): 사진의 음식 전체 무게(g)
+    2. 총 중량 (total_weight_g): 사진에 보이는 음식 전체 무게(g)
     {
         "food_name": "음식 이름",
         "total_weight_g": 숫자,
@@ -96,7 +95,7 @@ def analyze_food_image(image):
 st.set_page_config(page_title="장 건강 매니저", page_icon="💩")
 
 if 'user_name' not in st.session_state:
-    st.title("💩 나만의 시크릿 배변 일기장")
+    st.title("💩 영훈이의 시크릿 배변 일기장")
     name_input = st.text_input("이름을 입력해주세요")
     if st.button("시작하기"):
         if name_input:
@@ -108,21 +107,15 @@ user_name = st.session_state['user_name']
 data = load_data()
 food_db = load_food_db()
 
-# 사용자 데이터 가져오기
+# 사용자 데이터 초기화 (오류 방지 코드 포함)
 if user_name not in data["users"]:
-    data["users"][user_name] = {
-        "last_poop": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "meals_log": [],
-        "current_poop_stock": 0.0
-    }
-user_data = data["users"][user_name]
+    data["users"][user_name] = {}
 
-# 👇 [여기 추가!] 옛날 데이터가 있으면 새 버전으로 자동으로 고쳐주는 '치료' 코드
-if 'current_poop_stock' not in user_data:
-    user_data['current_poop_stock'] = 0.0
-if 'meals_log' not in user_data:
-    user_data['meals_log'] = []
-# 👆 여기까지
+user_data = data["users"][user_name]
+# 필수 키가 없으면 생성 (구버전 호환용)
+if "last_poop" not in user_data: user_data["last_poop"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+if "meals_log" not in user_data: user_data["meals_log"] = []
+if "current_poop_stock" not in user_data: user_data["current_poop_stock"] = 0.0
 
 st.title(f"🚽 {user_name}님의 장 건강 매니저")
 st.metric(label="현재 뱃속 예상 배변량", value=f"{user_data['current_poop_stock']:.1f}g")
@@ -136,72 +129,98 @@ with tab1:
         image = PIL.Image.open(uploaded_file)
         st.image(image, width=300)
         
-        # 👇 [수정됨] 시간 선택 기능 추가
-        st.write("🕒 **언제 드셨나요?**")
-        col_d, col_t = st.columns(2)
-        input_date = col_d.date_input("날짜", datetime.datetime.now())
-        input_time = col_t.time_input("시간", datetime.datetime.now())
+        st.write("---")
+        # 👇 [복구됨] 시간 선택 + 인원 수 선택
+        c1, c2 = st.columns(2)
+        input_date = c1.date_input("📅 날짜", datetime.datetime.now())
+        input_time = c2.time_input("⏰ 시간", datetime.datetime.now())
         
-        if st.button("AI 분석 시작 🚀"):
+        st.write("👥 **함께 먹은 사람은?**")
+        num_people = st.number_input("총 인원 (나 포함)", min_value=1, value=1, step=1)
+        
+        if st.button("AI 분석 시작 🚀", type="primary"):
             with st.spinner('분석 중...'):
                 result = analyze_food_image(image)
                 if result:
                     st.session_state['analysis_result'] = result
         
+        # 분석 결과 표시
         if 'analysis_result' in st.session_state:
             res = st.session_state['analysis_result']
             name = res['food_name']
-            weight = res['total_weight_g']
+            total_w = res['total_weight_g'] # 전체 무게
             
-            st.success(f"🔍 메뉴: {name} ({weight}g)")
+            st.success(f"🔍 메뉴: **{name}** (전체 약 {total_w}g)")
             
             # DB 매칭
             if name in food_db:
                 nut = food_db[name]
                 st.info("📚 데이터베이스(CSV) 정보를 사용합니다!")
             else:
-                st.warning("데이터베이스에 없는 메뉴입니다. (기본값 적용)")
+                st.warning("DB에 없는 메뉴입니다. (기본값 적용)")
                 nut = {"protein": 5, "fat": 5, "carbs": 20, "fiber": 2}
 
-            ratio = st.slider("먹은 양 비율", 0.5, 2.0, 1.0, 0.1)
-            real_w = weight * ratio
+            # 섭취 비율 조절 (내가 얼마나 먹었나)
+            eat_ratio = st.slider("내 섭취 비율 (1.0 = 1인분)", 0.5, 2.0, 1.0, 0.1)
             
-            # 영양소 계산
-            p = nut['protein'] * (real_w / 100)
-            f = nut['fat'] * (real_w / 100)
-            c = nut['carbs'] * (real_w / 100)
-            fib = nut['fiber'] * (real_w / 100)
+            # 🧮 [핵심] 내 몫 계산 (전체 무게 * 내 비율 / 인원수)
+            my_share_weight = (total_w * eat_ratio) / num_people
+            
+            st.write(f"👉 **내가 먹은 양:** 약 {my_share_weight:.1f}g ({num_people}명이서 나눠 먹음)")
+            
+            # 영양소 계산 (내 몫 기준)
+            p = nut['protein'] * (my_share_weight / 100)
+            f = nut['fat'] * (my_share_weight / 100)
+            c = nut['carbs'] * (my_share_weight / 100)
+            fib = nut['fiber'] * (my_share_weight / 100)
             
             # 배변량 계산
             poop = calculate_poop_amount(p, f, c, fib)
             
             st.write(f"### 💩 예상 배변량: +{poop}g")
             
-            if st.button("저장하기"):
-                # 선택한 날짜와 시간을 합쳐서 저장
+            if st.button("저장하기 💾"):
                 eat_datetime = datetime.datetime.combine(input_date, input_time)
                 
                 log = {
-                    "date": eat_datetime.strftime("%Y-%m-%d %H:%M"), # 👈 선택한 시간으로 저장
-                    "food": name,
+                    "date": eat_datetime.strftime("%Y-%m-%d %H:%M"),
+                    "food": f"{name} ({num_people}인 식사)",
+                    "weight": round(my_share_weight, 1),
                     "poop": poop
                 }
                 user_data['meals_log'].append(log)
                 user_data['current_poop_stock'] += poop
                 save_data(data)
+                
                 del st.session_state['analysis_result']
+                st.toast("저장되었습니다!")
+                time.sleep(1)
                 st.rerun()
 
 # --- 탭 2: 배변 기록 ---
 with tab2:
     if st.button("쾌변 완료 (비우기) 🚽", type="primary"):
+        # 비우기 전 기록
+        dump_amount = user_data['current_poop_stock']
         user_data['current_poop_stock'] = 0.0
-        user_data['last_poop'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M") # 비운 시간은 현재 시간
+        user_data['last_poop'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         save_data(data)
         st.balloons()
+        st.success(f"시원하게 {dump_amount:.1f}g 배출 완료!")
+        time.sleep(1)
         st.rerun()
-        
+    
+    st.divider()
+    st.write("📝 **최근 식사 내역**")
+    
     if user_data['meals_log']:
-        # 최신순으로 보여주기 (뒤집기)
-        display_data = user_data['meals_log'][::-1]
-        st.dataframe(pd.DataFrame(display_data))
+        # 데이터프레임으로 이쁘게 보여주기
+        df = pd.DataFrame(user_data['meals_log'])
+        # 최신순 정렬
+        df = df.iloc[::-1]
+        
+        # 컬럼 이름 한글로 변경
+        df.columns = ['시간', '메뉴', '먹은양(g)', '배변량(g)']
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("아직 기록이 없습니다. 맛있는 걸 드시고 기록해보세요! 🍚")
