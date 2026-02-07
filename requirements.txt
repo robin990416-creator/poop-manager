@@ -1,4 +1,5 @@
 streamlit
-google-generativeai
-Pillow
 pandas
+google-generativeai
+gspread
+oauth2client
