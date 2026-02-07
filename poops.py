@@ -108,6 +108,7 @@ user_name = st.session_state['user_name']
 data = load_data()
 food_db = load_food_db()
 
+# 사용자 데이터 가져오기
 if user_name not in data["users"]:
     data["users"][user_name] = {
         "last_poop": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -115,6 +116,13 @@ if user_name not in data["users"]:
         "current_poop_stock": 0.0
     }
 user_data = data["users"][user_name]
+
+# 👇 [여기 추가!] 옛날 데이터가 있으면 새 버전으로 자동으로 고쳐주는 '치료' 코드
+if 'current_poop_stock' not in user_data:
+    user_data['current_poop_stock'] = 0.0
+if 'meals_log' not in user_data:
+    user_data['meals_log'] = []
+# 👆 여기까지
 
 st.title(f"🚽 {user_name}님의 장 건강 매니저")
 st.metric(label="현재 뱃속 예상 배변량", value=f"{user_data['current_poop_stock']:.1f}g")
