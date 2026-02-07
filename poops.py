@@ -7,6 +7,9 @@ import time
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import hashlib
+import statistics
+import os
 
 # ---------------------------------------------------------
 # [설정] API 키 & 구글 시트 연결
@@ -20,34 +23,44 @@ else:
 
 model = genai.GenerativeModel('gemini-flash-latest')
 
-# 2. 구글 시트 연결 함수 (캐싱으로 속도 향상)
+# 2. 구글 시트 연결 함수 (TOML 테이블 호환 버전 🛠️)
 @st.cache_resource
 def get_google_sheet_client():
     try:
-        # Secrets에서 JSON 문자열을 가져와서 딕셔너리로 변환
-        key_dict = json.loads(st.secrets["GOOGLE_SHEET_KEY"])
+        # 1순위: [gcp_service_account] 테이블 방식으로 시도 (가장 안정적)
+        if "gcp_service_account" in st.secrets:
+            key_dict = dict(st.secrets["gcp_service_account"])
+            # private_key의 줄바꿈 문자(\n)가 문자로 인식될 경우 실제 줄바꿈으로 변환
+            if "\\n" in key_dict["private_key"]:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+        
+        # 2순위: 옛날 방식 (JSON 문자열) 시도
+        elif "GOOGLE_SHEET_KEY" in st.secrets:
+            key_dict = json.loads(st.secrets["GOOGLE_SHEET_KEY"])
+        
+        else:
+            st.error("🚨 Secrets에 구글 시트 키가 없습니다. [gcp_service_account] 설정을 확인해주세요.")
+            return None
+
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"🔌 구글 시트 연결 실패: {e}")
+        st.error(f"🔌 구글 시트 연결 실패: {e}\n(Secrets의 private_key 형식을 확인해주세요!)")
         return None
 
 # 3. 데이터 로드/저장 함수 (구글 시트 버전)
 def get_or_create_worksheet(client, sheet_name, user_name):
-    # 시트 파일 열기 (이름: poop_db)
     try:
         sh = client.open("poop_db")
     except gspread.SpreadsheetNotFound:
         st.error("🚨 'poop_db'라는 이름의 구글 스프레드시트를 찾을 수 없습니다! 구글 드라이브에서 파일을 만들고 봇 계정을 초대했는지 확인해주세요.")
         st.stop()
 
-    # 탭(Worksheet) 확인 및 생성
     try:
         worksheet = sh.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
-        # 탭이 없으면 새로 생성 (헤더 추가)
         worksheet = sh.add_worksheet(title=sheet_name, rows=100, cols=10)
         if sheet_name == "meals":
             worksheet.append_row(["이름", "날짜", "메뉴", "인원", "먹은양(g)", "배변변환량(g)"])
@@ -60,29 +73,33 @@ def load_data_from_sheet(user_name):
     client = get_google_sheet_client()
     if not client: return [], [], 0.0
 
-    # 1. 식사 기록 가져오기
+    # 1. 식사 기록
     ws_meals = get_or_create_worksheet(client, "meals", user_name)
     meals_data = ws_meals.get_all_records()
-    # 내 이름 데이터만 필터링
     my_meals = [m for m in meals_data if str(m.get("이름")) == user_name]
 
-    # 2. 배변 기록 가져오기
+    # 2. 배변 기록
     ws_poops = get_or_create_worksheet(client, "poops", user_name)
     poops_data = ws_poops.get_all_records()
     my_poops = [p for p in poops_data if str(p.get("이름")) == user_name]
 
-    # 3. 현재 뱃속 재고 계산 (처음부터 다시 계산)
+    # 3. 뱃속 재고 계산
     current_stock = 0.0
-    
-    # 시간순 정렬을 위해 리스트 합치기 및 정렬
     events = []
     for m in my_meals:
-        events.append({"type": "eat", "date": m["날짜"], "amount": float(m["배변변환량(g)"])})
+        # 날짜 형식이 올바른지 확인
+        if m.get("날짜"):
+            events.append({"type": "eat", "date": str(m["날짜"]), "amount": float(m["배변변환량(g)"])})
     for p in my_poops:
-        events.append({"type": "poop", "date": p["날짜"], "amount": float(p["배출량(g)"])})
+        if p.get("날짜"):
+            events.append({"type": "poop", "date": str(p["날짜"]), "amount": float(p["배출량(g)"])})
     
-    # 날짜 기준 오름차순 정렬
-    events.sort(key=lambda x: datetime.datetime.strptime(x["date"], "%Y-%m-%d %H:%M"))
+    # 날짜 정렬
+    def safe_parse(d):
+        try: return datetime.datetime.strptime(d, "%Y-%m-%d %H:%M")
+        except: return datetime.datetime.min
+    
+    events.sort(key=lambda x: safe_parse(x["date"]))
 
     for event in events:
         if event["type"] == "eat":
@@ -170,13 +187,12 @@ def parse_dt(value):
     except: return None
 
 def estimate_transit_hours(meals, poops):
-    # 구글 시트 데이터 포맷에 맞춰 변환
     meals_f, poops_f = [], []
     for m in meals:
-        dt = parse_dt(m["날짜"])
+        dt = parse_dt(m.get("날짜"))
         if dt: meals_f.append({"_dt": dt})
     for p in poops:
-        dt = parse_dt(p["날짜"])
+        dt = parse_dt(p.get("날짜"))
         if dt: poops_f.append({"_dt": dt})
     
     meals_f.sort(key=lambda x: x["_dt"])
@@ -185,32 +201,34 @@ def estimate_transit_hours(meals, poops):
     if not meals_f or not poops_f: return None
 
     deltas = []
-    # 간단한 로직: 식사 후 가장 가까운 미래의 배변 시간 차이 (최근 5건만)
+    # 최근 5건의 식사만 분석
     recent_meals = meals_f[-5:]
     for m in recent_meals:
         for p in poops_f:
             if p["_dt"] > m["_dt"]:
                 hours = (p["_dt"] - m["_dt"]).total_seconds() / 3600
-                if 0.5 <= hours <= 72: # 유효 범위
+                if 0.5 <= hours <= 72:
                     deltas.append(hours)
                 break
     
     if len(deltas) < 1: return None
-    import statistics
     return statistics.median(deltas)
 
 def load_food_db():
     try:
         if os.path.exists("food_db.csv"):
-            df = pd.read_csv("food_db.csv") # 인코딩 이슈시 'euc-kr' 추가
+            # 인코딩 자동 감지 시도
+            try:
+                df = pd.read_csv("food_db.csv", encoding='utf-8')
+            except:
+                df = pd.read_csv("food_db.csv", encoding='euc-kr')
+
             df.columns = df.columns.str.strip()
-            # 간단 매핑
-            rename_map = {'식품명':'menu', '단백질(g)':'protein', '지방(g)':'fat', '탄수화물(g)':'carbs', '식이섬유(g)':'fiber'}
+            rename_map = {'식품명':'menu', '단백질(g)':'protein', '지방(g)':'fat', '탄수화물(g)':'carbs', '식이섬유(g)':'fiber', '메뉴':'menu'}
             for k, v in rename_map.items():
                 if k in df.columns: df.rename(columns={k: v}, inplace=True)
             
             if 'menu' in df.columns:
-                 # 중복제거
                 df = df.drop_duplicates(subset=['menu'])
                 df = df.fillna(0)
                 return df.set_index('menu').to_dict(orient='index')
@@ -223,7 +241,7 @@ def load_food_db():
 st.set_page_config(page_title="나만의 비밀일기장 (클라우드)", page_icon="☁️")
 
 if 'user_name' not in st.session_state:
-    st.title("☁️ 나만의 비밀일기장 ")
+    st.title("☁️ 나만의 비밀일기장 (구글 연동)")
     name_input = st.text_input("이름을 입력해주세요 (데이터 식별용)")
     if st.button("시작하기"):
         if name_input:
@@ -234,7 +252,7 @@ if 'user_name' not in st.session_state:
 user_name = st.session_state['user_name']
 food_db = load_food_db()
 
-# 데이터 로드 (구글 시트에서!)
+# 데이터 로드
 with st.spinner("☁️ 구글 시트에서 데이터를 불러오는 중..."):
     my_meals, my_poops, current_poop_stock = load_data_from_sheet(user_name)
 
@@ -243,7 +261,9 @@ st.title(f"🤫 {user_name}의 비밀일기장")
 # 통계 계산
 transit_hours = estimate_transit_hours(my_meals, my_poops)
 last_meal_dt = parse_dt(my_meals[-1]["날짜"]) if my_meals else None
-next_pred_dt = last_meal_dt + datetime.timedelta(hours=transit_hours) if (transit_hours and last_meal_dt) else None
+next_pred_dt = None
+if transit_hours and last_meal_dt:
+    next_pred_dt = last_meal_dt + datetime.timedelta(hours=transit_hours)
 
 c1, c2, c3 = st.columns(3)
 c1.metric("현재 뱃속 재고", f"{current_poop_stock:.1f}g")
@@ -278,15 +298,13 @@ with tab1:
                 else:
                     st.error("분석 실패. 수동으로 입력해주세요.")
 
-        # 분석 결과 확인 및 저장
         if "ai_result" in st.session_state:
             data = st.session_state["ai_result"]
             st.info("결과를 확인하고 저장하세요.")
             name = st.text_input("메뉴명", data["food_name"])
             weight = st.number_input("총 중량(g)", value=float(data["total_weight_g"]))
             
-            # DB 영양소 확인
-            nut = {"protein": 5, "fat": 5, "carbs": 20, "fiber": 2} # 기본값
+            nut = {"protein": 5, "fat": 5, "carbs": 20, "fiber": 2}
             if name in food_db:
                 nut = food_db[name]
                 st.success(f"📚 DB 정보 적용: {name}")
@@ -320,13 +338,11 @@ with tab2:
     condition = st.radio("상태", ["🌟 쾌변 (100% 비움)", "🙂 보통 (50% 비움)", "😞 찜찜 (20% 비움)"], horizontal=True)
     
     if st.button("배변 기록 저장 💾", type="primary"):
-        # 현재 재고 기반 배출량 계산
         ratio = 1.0 if "쾌변" in condition else (0.5 if "보통" in condition else 0.2)
         out_amount = current_poop_stock * ratio
         
         dt_str = datetime.datetime.combine(p_date, p_time).strftime("%Y-%m-%d %H:%M")
         
-        # 오차 계산
         err_min = 0
         pred_str = ""
         if next_pred_dt:
@@ -343,8 +359,8 @@ with tab2:
     st.divider()
     if my_poops:
         df = pd.DataFrame(my_poops)
-        # 역순 정렬 (최신이 위로)
-        df = df.iloc[::-1]
-        st.dataframe(df, use_container_width=True)
+        if not df.empty:
+            df = df.iloc[::-1]
+            st.dataframe(df, use_container_width=True)
     else:
         st.info("기록이 없습니다.")
