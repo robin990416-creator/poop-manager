@@ -46,7 +46,7 @@ def calculate_poop_amount(protein, fat, carbs, fiber):
     return round(total_poop, 1)
 
 # ---------------------------------------------------------
-# 데이터 관리 함수 (공공데이터 호환성 강화판 🛠️)
+# 데이터 관리 함수 (중복 에러 완벽 해결 🛠️)
 # ---------------------------------------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -93,6 +93,9 @@ def load_food_db():
             df.rename(columns=column_mapping, inplace=True)
 
             if 'menu' in df.columns:
+                # 🛠️ [핵심] 중복된 메뉴가 있으면 첫 번째만 남기고 삭제 (에러 원천 차단)
+                df = df.drop_duplicates(subset=['menu'])
+                
                 fill_cols = ['protein', 'fat', 'carbs', 'fiber']
                 for c in fill_cols:
                     if c in df.columns:
@@ -109,30 +112,39 @@ def load_food_db():
     return {}
 
 # ---------------------------------------------------------
-# AI 분석 함수
+# AI 분석 함수 (5회 재시도 기능 포함 🔄)
 # ---------------------------------------------------------
 def analyze_food_image(image):
     image.thumbnail((512, 512)) 
     prompt = """
     이 음식 사진을 분석해서 JSON 형식으로만 답해줘.
     1. 음식 이름 (food_name): 메뉴명 (예: 김치찌개)
-    2. 총 중량 (total_weight_g): 사진에 보이는 음식 전체 무게(g)
+    2. 총 중량 (total_weight_g): 사진에 보이는 음식 전체 무게(g) 숫자만
     {
         "food_name": "음식 이름",
         "total_weight_g": 숫자,
         "comment": "짧은 평가"
     }
     """
-    try:
-        response = model.generate_content([prompt, image])
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            text = text[start:end + 1]
-        return json.loads(text)
-    except:
-        return None
+    
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content([prompt, image])
+            text = response.text.replace("```json", "").replace("```", "").strip()
+            
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                text = text[start:end + 1]
+                result = json.loads(text)
+                if result.get("food_name") and result.get("total_weight_g"):
+                    return result
+            time.sleep(1)
+        except Exception as e:
+            time.sleep(1)
+            
+    return None
 
 def normalize_ai_result(raw):
     if not isinstance(raw, dict):
@@ -201,7 +213,6 @@ def get_latest_meal_dt(meals):
 # ---------------------------------------------------------
 # [UI 구성]
 # ---------------------------------------------------------
-# 👇 [수정됨] 제목 변경: 나만의 비밀일기장
 st.set_page_config(page_title="나만의 비밀일기장", page_icon="🤫")
 
 if 'user_name' not in st.session_state:
@@ -226,7 +237,6 @@ if "meals_log" not in user_data: user_data["meals_log"] = []
 if "current_poop_stock" not in user_data: user_data["current_poop_stock"] = 0.0
 if "poop_log" not in user_data: user_data["poop_log"] = []
 
-# 👇 [수정됨] 제목 변경
 st.title(f"🤫 {user_name}의 비밀일기장")
 
 transit_hours, transit_stats = estimate_transit_hours(user_data["meals_log"], user_data["poop_log"])
@@ -270,6 +280,8 @@ with tab1:
             st.session_state["analysis_file_hash"] = file_hash
             st.session_state.pop("analysis_result", None)
             st.session_state.pop("analysis_error", None)
+            st.session_state.pop("confirmed_name", None)
+            st.session_state.pop("confirmed_weight", None)
 
         image = PIL.Image.open(uploaded_file)
         st.image(image, width=300)
@@ -283,17 +295,24 @@ with tab1:
         num_people = st.number_input("총 인원 (나 포함)", min_value=1, value=1, step=1)
         
         if st.button("AI 분석 시작 🚀", type="primary"):
-            with st.spinner('분석 중...'):
-                result = analyze_food_image(image)
-                if result:
-                    normalized, err = normalize_ai_result(result)
-                    if normalized:
-                        st.session_state['analysis_result'] = normalized
-                        st.session_state.pop("analysis_error", None)
-                    else:
-                        st.session_state['analysis_error'] = err
+            status_text = st.empty()
+            status_text.text("AI가 분석 중입니다... (1차 시도)")
+            
+            result = analyze_food_image(image)
+            
+            if result:
+                status_text.success("분석 성공! ✅")
+                normalized, err = normalize_ai_result(result)
+                if normalized:
+                    st.session_state['analysis_result'] = normalized
+                    st.session_state.pop("analysis_error", None)
+                    st.session_state['confirmed_name'] = normalized['food_name']
+                    st.session_state['confirmed_weight'] = normalized['total_weight_g']
                 else:
-                    st.session_state['analysis_error'] = "AI 분석 실패"
+                    st.session_state['analysis_error'] = err
+            else:
+                status_text.error("분석 실패. 수동으로 입력해주세요. 😭")
+                st.session_state['analysis_error'] = "분석 실패 (5회 재시도 초과)"
 
         if 'analysis_error' in st.session_state:
             st.error(st.session_state['analysis_error'])
@@ -305,27 +324,32 @@ with tab1:
                     "total_weight_g": manual_weight,
                     "comment": "수동 입력"
                 }
+                st.session_state['confirmed_name'] = manual_name
+                st.session_state['confirmed_weight'] = manual_weight
                 st.session_state.pop("analysis_error", None)
                 st.rerun()
 
         if 'analysis_result' in st.session_state:
-            res = st.session_state['analysis_result']
-            name = res['food_name']
-            total_w = res['total_weight_g']
+            st.divider()
+            st.subheader("🧐 결과 확인 및 수정")
+            st.info("내용이 맞는지 확인해주세요!")
             
-            st.success(f"🔍 메뉴: **{name}** ({total_w}g)")
+            name = st.text_input("메뉴 이름", value=st.session_state.get('confirmed_name', ''), key='input_name')
+            total_w = st.number_input("전체 중량(g)", value=float(st.session_state.get('confirmed_weight', 0)), step=10.0, key='input_weight')
+            
+            st.write(f"---")
             
             if name in food_db:
                 nut = food_db[name]
-                st.info(f"📚 DB 데이터 적용: {name}")
+                st.success(f"📚 DB 적용: {name}")
             else:
-                st.warning("DB에 없는 메뉴 (기본값 적용)")
+                st.warning(f"DB에 없음 (기본값)")
                 nut = {"protein": 5, "fat": 5, "carbs": 20, "fiber": 2}
 
             eat_ratio = st.slider("내 섭취 비율", 0.5, 2.0, 1.0, 0.1)
             my_share_weight = (total_w * eat_ratio) / num_people
             
-            st.write(f"👉 **내가 먹은 양:** {my_share_weight:.1f}g ({num_people}인 식사)")
+            st.write(f"👉 **내가 먹은 양:** {my_share_weight:.1f}g ({num_people}인)")
             
             p = nut.get('protein', 0) * (my_share_weight / 100)
             f = nut.get('fat', 0) * (my_share_weight / 100)
@@ -336,7 +360,7 @@ with tab1:
             
             st.write(f"### 💩 예상 배변량: +{poop}g")
             
-            if st.button("저장하기 💾"):
+            if st.button("확인 완료 및 저장 💾", type="primary"):
                 eat_datetime = datetime.datetime.combine(input_date, input_time)
                 log = {
                     "date": eat_datetime.strftime("%Y-%m-%d %H:%M"),
@@ -347,9 +371,57 @@ with tab1:
                 user_data['meals_log'].append(log)
                 user_data['current_poop_stock'] += poop
                 save_data(data)
+                
                 del st.session_state['analysis_result']
+                st.session_state.pop("confirmed_name", None)
+                st.session_state.pop("confirmed_weight", None)
+                
                 st.toast("저장 완료!")
                 time.sleep(1)
                 st.rerun()
 
-# --- 탭
+# --- 탭 2: 배변 기록 (빈 화면 해결됨 ✅) ---
+with tab2:
+    st.write("🧻 **배변 기록**")
+    
+    st.write("### 🚀 지금 바로 쾌변하셨나요?")
+    if st.button("네! 지금 다 비웠습니다 🚽", type="primary"):
+        dump_amount = float(user_data['current_poop_stock'])
+        now = datetime.datetime.now()
+        entry = {"date": now.strftime("%Y-%m-%d %H:%M"), "amount": round(dump_amount, 1)}
+        
+        if next_pred_dt:
+            err = int((now - next_pred_dt).total_seconds() / 60)
+            entry["predicted"] = next_pred_dt.strftime("%Y-%m-%d %H:%M")
+            entry["error_min"] = err
+            
+        user_data['poop_log'].append(entry)
+        user_data['current_poop_stock'] = 0.0
+        user_data['last_poop'] = now.strftime("%Y-%m-%d %H:%M")
+        save_data(data)
+        st.balloons()
+        st.success(f"상쾌하시겠어요! (예상 배출량: {dump_amount:.1f}g)")
+        time.sleep(1)
+        st.rerun()
+
+    st.divider()
+
+    st.write("### 🕒 아까 다녀오셨나요?")
+    c1, c2 = st.columns(2)
+    poop_date = c1.date_input("날짜", datetime.datetime.now(), key="pd")
+    poop_time = c2.time_input("시간", datetime.datetime.now(), key="pt")
+    
+    if st.button("이 시간에 다녀왔다고 기록하기 💾"):
+        dump_amount = float(user_data['current_poop_stock'])
+        poop_dt = datetime.datetime.combine(poop_date, poop_time)
+        
+        entry = {"date": poop_dt.strftime("%Y-%m-%d %H:%M"), "amount": round(dump_amount, 1)}
+        
+        if next_pred_dt:
+            err = int((poop_dt - next_pred_dt).total_seconds() / 60)
+            entry["predicted"] = next_pred_dt.strftime("%Y-%m-%d %H:%M")
+            entry["error_min"] = err
+        
+        user_data['poop_log'].append(entry)
+        user_data['current_poop_stock'] = 0.0
+        user_data['last_poop'] = poop_dt.strftime("%Y-%m-%d %H:%M")
