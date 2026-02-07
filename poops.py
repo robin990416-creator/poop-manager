@@ -23,32 +23,21 @@ else:
 
 model = genai.GenerativeModel('gemini-flash-latest')
 
-# 2. 구글 시트 연결 함수 (키 자동 수리 기능 추가 🛠️)
+# 2. 구글 시트 연결 함수
 @st.cache_resource
 def get_google_sheet_client():
     try:
         if "gcp_service_account" in st.secrets:
             key_dict = dict(st.secrets["gcp_service_account"])
-            
-            # 🛠️ [핵심] private_key 자동 수리
             pk = key_dict.get("private_key", "")
-            
-            # 1. "..." 같은 예시 문구가 들어있으면 에러 띄우기
-            if "..." in pk or len(pk) < 100:
-                st.error("🚨 'private_key'가 너무 짧거나 '...'이 포함되어 있습니다! JSON 파일의 진짜 긴 암호를 복사해서 넣어주세요.")
-                return None
-
-            # 2. 줄바꿈 문자(\n) 처리 (문자열로 들어왔을 때)
             if "\\n" in pk:
-                pk = pk.replace("\\n", "\n")
-            
-            # 3. 앞뒤 공백 제거 및 업데이트
-            key_dict["private_key"] = pk.strip()
+                key_dict["private_key"] = pk.replace("\\n", "\n")
+            key_dict["private_key"] = key_dict["private_key"].strip()
 
         elif "GOOGLE_SHEET_KEY" in st.secrets:
             key_dict = json.loads(st.secrets["GOOGLE_SHEET_KEY"])
         else:
-            st.error("🚨 Secrets에 구글 시트 키가 없습니다. [gcp_service_account] 설정을 확인해주세요.")
+            st.error("🚨 Secrets 설정 오류.")
             return None
 
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -56,15 +45,21 @@ def get_google_sheet_client():
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"🔌 구글 시트 연결 실패: {e}\n(Secrets의 private_key 형식을 확인해주세요!)")
+        st.error(f"🔌 연결 실패: {e}")
         return None
 
-# 3. 데이터 로드/저장 함수
+# 3. 데이터 로드/저장 함수 (디버깅 기능 강화 🕵️‍♂️)
 def get_or_create_worksheet(client, sheet_name, user_name):
     try:
         sh = client.open("poop_db")
     except gspread.SpreadsheetNotFound:
-        st.error("🚨 'poop_db'라는 이름의 구글 스프레드시트를 찾을 수 없습니다! 구글 드라이브에서 파일을 만들고 봇 계정을 편집자로 초대했는지 확인해주세요.")
+        # 🚨 못 찾았을 때, 로봇이 볼 수 있는 파일 목록을 출력해줌!
+        try:
+            file_list = client.openall()
+            titles = [f.title for f in file_list]
+            st.error(f"🚨 'poop_db' 파일을 찾을 수 없습니다.\n\n🤖 **로봇이 현재 볼 수 있는 파일 목록:**\n{titles}\n\n1. 목록에 아무것도 없다면? 👉 **공유(초대)**가 안 됐거나 **Google Drive API**가 꺼져있습니다.\n2. 목록에 있는데 이름이 다르다면? 👉 파일 이름을 **'poop_db'**로 바꿔주세요.\n3. 엑셀 파일(.xlsx)은 아닌가요? 👉 **구글 스프레드시트**로 새로 만들어주세요.")
+        except Exception as e:
+            st.error(f"🚨 'poop_db'를 못 찾았고, 파일 목록 조회도 실패했습니다.\n(원인: {e})\n\n👉 **구글 클라우드 콘솔에서 'Google Drive API'를 켰는지 꼭 확인해주세요!**")
         st.stop()
 
     try:
@@ -82,17 +77,14 @@ def load_data_from_sheet(user_name):
     client = get_google_sheet_client()
     if not client: return [], [], 0.0
 
-    # 1. 식사 기록
     ws_meals = get_or_create_worksheet(client, "meals", user_name)
     meals_data = ws_meals.get_all_records()
     my_meals = [m for m in meals_data if str(m.get("이름")) == user_name]
 
-    # 2. 배변 기록
     ws_poops = get_or_create_worksheet(client, "poops", user_name)
     poops_data = ws_poops.get_all_records()
     my_poops = [p for p in poops_data if str(p.get("이름")) == user_name]
 
-    # 3. 뱃속 재고 계산
     current_stock = 0.0
     events = []
     
