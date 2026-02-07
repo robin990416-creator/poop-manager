@@ -46,7 +46,7 @@ def calculate_poop_amount(protein, fat, carbs, fiber):
     return round(total_poop, 1)
 
 # ---------------------------------------------------------
-# 데이터 관리 함수 (호환성 강화판 🛠️)
+# 데이터 관리 함수 (공공데이터 호환성 강화판 🛠️)
 # ---------------------------------------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -54,14 +54,12 @@ def load_data():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except json.JSONDecodeError:
-            # 손상된 JSON 복구
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = f"{DATA_FILE}.bak-{ts}"
             try:
                 os.replace(DATA_FILE, backup_path)
             except Exception:
                 pass
-            st.warning("데이터 파일이 손상되어 초기화했습니다.")
             return {"users": {}}
     return {"users": {}}
 
@@ -72,32 +70,58 @@ def save_data(data):
 def load_food_db():
     if os.path.exists(FOOD_DB_FILE):
         try:
-            # 1. 인코딩 자동 감지 (UTF-8 시도 후 실패하면 EUC-KR 시도)
+            # 1. 인코딩 자동 감지 (UTF-8 -> EUC-KR -> CP949 순서로 시도)
             try:
                 df = pd.read_csv(FOOD_DB_FILE, encoding='utf-8')
             except UnicodeDecodeError:
-                df = pd.read_csv(FOOD_DB_FILE, encoding='euc-kr')
-            except Exception:
-                df = pd.read_csv(FOOD_DB_FILE, encoding='cp949') # 윈도우 엑셀 최후의 수단
+                try:
+                    df = pd.read_csv(FOOD_DB_FILE, encoding='euc-kr')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(FOOD_DB_FILE, encoding='cp949')
 
-            # 2. 컬럼 이름 공백 제거 (" menu " -> "menu")
+            # 2. 컬럼 이름 공백 제거
             df.columns = df.columns.str.strip()
             
-            # 3. 한글 헤더 지원 (자동 변환)
-            rename_map = {
+            # 3. [핵심] 공공데이터 컬럼명을 우리 코드가 아는 이름으로 변경
+            # (식품명 -> menu, 단백질(g) -> protein 등으로 매핑)
+            column_mapping = {
+                '식품명': 'menu',
+                '식품이름': 'menu',
                 '메뉴': 'menu',
+                '품목명': 'menu',
+                
+                '단백질(g)': 'protein',
                 '단백질': 'protein',
+                
+                '지방(g)': 'fat',
                 '지방': 'fat',
+                
+                '탄수화물(g)': 'carbs',
                 '탄수화물': 'carbs',
-                '식이섬유': 'fiber'
+                
+                '식이섬유(g)': 'fiber',
+                '식이섬유': 'fiber',
+                '총식이섬유(g)': 'fiber'
             }
-            df.rename(columns=rename_map, inplace=True)
+            
+            # 컬럼 이름 바꾸기
+            df.rename(columns=column_mapping, inplace=True)
 
-            # 4. 필수 컬럼 확인
+            # 4. 필수 컬럼 확인 ('menu'가 있는지 확인)
             if 'menu' in df.columns:
+                # NaN(빈값)은 0으로 채우기 (에러 방지)
+                fill_cols = ['protein', 'fat', 'carbs', 'fiber']
+                for c in fill_cols:
+                    if c in df.columns:
+                        df[c] = df[c].fillna(0)
+                    else:
+                        # 해당 영양소 컬럼이 아예 없으면 0으로 생성
+                        df[c] = 0.0
+                        
                 return df.set_index('menu').to_dict(orient='index')
             else:
-                st.warning(f"CSV 파일에 'menu' 또는 '메뉴' 컬럼이 없습니다. 현재 컬럼: {list(df.columns)}")
+                # 에러 메시지를 너무 길게 출력하지 않도록 조절
+                st.warning(f"CSV 파일 형식이 맞지 않습니다. '식품명' 또는 '메뉴' 열이 필요합니다.")
                 return {}
                 
         except Exception as e:
@@ -315,6 +339,7 @@ with tab1:
             if name in food_db:
                 nut = food_db[name]
                 st.info(f"📚 DB 데이터 적용: {name}")
+                st.caption(f"단백질: {nut.get('protein',0)}g / 지방: {nut.get('fat',0)}g / 탄수: {nut.get('carbs',0)}g / 식이: {nut.get('fiber',0)}g")
             else:
                 st.warning("DB에 없는 메뉴 (기본값 적용)")
                 nut = {"protein": 5, "fat": 5, "carbs": 20, "fiber": 2}
@@ -324,10 +349,10 @@ with tab1:
             
             st.write(f"👉 **내가 먹은 양:** {my_share_weight:.1f}g ({num_people}인 식사)")
             
-            p = nut['protein'] * (my_share_weight / 100)
-            f = nut['fat'] * (my_share_weight / 100)
-            c = nut['carbs'] * (my_share_weight / 100)
-            fib = nut['fiber'] * (my_share_weight / 100)
+            p = nut.get('protein', 0) * (my_share_weight / 100)
+            f = nut.get('fat', 0) * (my_share_weight / 100)
+            c = nut.get('carbs', 0) * (my_share_weight / 100)
+            fib = nut.get('fiber', 0) * (my_share_weight / 100)
             
             poop = calculate_poop_amount(p, f, c, fib)
             
