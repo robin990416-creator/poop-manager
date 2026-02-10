@@ -264,7 +264,7 @@ def load_food_db():
 st.set_page_config(page_title="나만의 비밀일기장 (클라우드)", page_icon="☁️")
 
 if 'user_name' not in st.session_state:
-    st.title("☁️ 나만의 비밀일기장 (구글 연동)")
+    st.title("☁️ 나만의 비밀일기장 ")
     name_input = st.text_input("이름을 입력해주세요 (데이터 식별용)")
     if st.button("시작하기"):
         if name_input:
